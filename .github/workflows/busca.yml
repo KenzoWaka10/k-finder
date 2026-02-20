@@ -1,0 +1,34 @@
+name: K-Finder — Busca Automatica
+
+on:
+  schedule:
+    # Roda a cada 6 horas (meia-noite, 6h, meio-dia, 18h UTC)
+    - cron: "0 0,6,12,18 * * *"
+  workflow_dispatch:
+    # Permite rodar manualmente pelo GitHub com 1 clique
+
+jobs:
+  buscar-passagens:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar o codigo
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install apify-client requests python-dotenv openai
+
+      - name: Rodar o K-Finder
+        env:
+          APIFY_TOKEN:        ${{ secrets.APIFY_TOKEN }}
+          TELEGRAM_TOKEN:     ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          EMAIL_REMETENTE:    ${{ secrets.EMAIL_REMETENTE }}
+          EMAIL_SENHA_APP:    ${{ secrets.EMAIL_SENHA_APP }}
+          EMAIL_DESTINATARIO: ${{ secrets.EMAIL_DESTINATARIO }}
+        run: python kfinder.py
