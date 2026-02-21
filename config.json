@@ -1,9 +1,14 @@
 {
-  "origem": "LDB",
-  "destino": "BPS",
-  "data_ida": "2026-04-10",
-  "data_volta": "",
-  "preco_maximo": 800.0,
-  "preco_minimo": 0,
-  "adultos": 1
+  "rotas": [
+    {
+      "id": 1,
+      "origem": "LDB",
+      "destino": "BPS",
+      "data_ida": "2026-03-15",
+      "data_volta": "2026-03-22",
+      "adultos": 1,
+      "preco_minimo": 0,
+      "preco_maximo": 600
+    }
+  ]
 }

@@ -1,7 +1,6 @@
 """
-K-FINDER v3.0 — KenLogic Solutions
-Busca automatica de passagens — roda via GitHub Actions a cada 6h
-Le a rota do config.json (atualizado pelo bot.py via Telegram)
+K-FINDER v3.1 — KenLogic Solutions
+Suporte a multiplas rotas simultaneas + link Google Flights
 """
 
 import os
@@ -22,24 +21,25 @@ EMAIL_REMETENTE    = os.getenv("EMAIL_REMETENTE")
 EMAIL_SENHA_APP    = os.getenv("EMAIL_SENHA_APP")
 EMAIL_DESTINATARIO = os.getenv("EMAIL_DESTINATARIO")
 
-CONFIG_FILE = "config.json"
+CONFIG_FILE    = "config.json"
+HISTORICO_FILE = "historico_precos.json"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  1. LER CONFIGURACAO DO config.json
+#  1. CONFIG — lista de rotas
 # ══════════════════════════════════════════════════════════════════════════════
 
-def ler_config() -> dict:
-    """Le a rota e criterios salvos pelo bot.py"""
+def ler_rotas() -> list:
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            config = json.load(f)
-            print(f"Config carregada: {config['origem']} -> {config['destino']} | ate R$ {config['preco_maximo']}")
-            return config
-
-    # Padrao se config.json nao existir
-    print("config.json nao encontrado, usando configuracao padrao.")
-    return {
+            data = json.load(f)
+            # Suporta tanto config nova (lista) quanto antiga (dict unico)
+            if "rotas" in data:
+                return data["rotas"]
+            else:
+                return [data]
+    return [{
+        "id": 1,
         "origem":       "LDB",
         "destino":      "BPS",
         "data_ida":     "2026-03-15",
@@ -47,11 +47,35 @@ def ler_config() -> dict:
         "adultos":      1,
         "preco_minimo": 0,
         "preco_maximo": 600,
-    }
+    }]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  2. BUSCA DE PASSAGENS (Apify)
+#  2. LINK DO GOOGLE FLIGHTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def gerar_link_google_flights(config: dict) -> str:
+    """Gera link direto para o Google Flights com a rota e data."""
+    origem  = config["origem"]
+    destino = config["destino"]
+    data    = config["data_ida"].replace("-", "")  # ex: 20260315
+
+    if config.get("data_volta"):
+        volta = config["data_volta"].replace("-", "")
+        url = (
+            f"https://www.google.com/travel/flights/search?"
+            f"tfs=CBwQAhoeEgoyMDI2MDMxNQ*"  # template base
+        )
+        # Link simples e funcional
+        url = f"https://www.google.com/travel/flights?q=Flights+from+{origem}+to+{destino}+on+{config['data_ida']}+returning+{config['data_volta']}"
+    else:
+        url = f"https://www.google.com/travel/flights?q=Flights+from+{origem}+to+{destino}+on+{config['data_ida']}"
+
+    return url
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  3. BUSCA DE PASSAGENS (Apify)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def buscar_passagens(config: dict) -> list:
@@ -66,8 +90,7 @@ def buscar_passagens(config: dict) -> list:
         print("❌ APIFY_TOKEN nao encontrado")
         return []
 
-    print(f"\nBuscando: {config['origem']} -> {config['destino']} | {config['data_ida']}")
-    print("Aguardando Apify (~30s)...")
+    print(f"  Buscando: {config['origem']} -> {config['destino']} | {config['data_ida']} | ate R$ {config['preco_maximo']}")
 
     client = ApifyClient(APIFY_TOKEN)
 
@@ -92,12 +115,12 @@ def buscar_passagens(config: dict) -> list:
         for voo in best + other:
             resultados.append(voo)
 
-    print(f"{len(resultados)} voo(s) encontrado(s).")
+    print(f"  {len(resultados)} voo(s) encontrado(s).")
     return resultados
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  3. FILTRO DE OFERTAS
+#  4. FILTRO
 # ══════════════════════════════════════════════════════════════════════════════
 
 def extrair_preco(voo: dict):
@@ -127,6 +150,7 @@ def filtrar_ofertas(voos: list, config: dict) -> list:
                 "duracao":     str(voo.get("total_duration", "N/A")) + " min",
                 "escalas":     layovers,
                 "horario_ida": horario,
+                "link":        gerar_link_google_flights(config),
             })
 
     ofertas.sort(key=lambda x: x["preco"])
@@ -134,10 +158,8 @@ def filtrar_ofertas(voos: list, config: dict) -> list:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  4. COMPARACAO DE PRECOS (evita alertas repetidos)
+#  5. HISTORICO (evita alertas repetidos)
 # ══════════════════════════════════════════════════════════════════════════════
-
-HISTORICO_FILE = "historico_precos.json"
 
 def ler_historico() -> dict:
     if os.path.exists(HISTORICO_FILE):
@@ -152,54 +174,48 @@ def salvar_historico(chave: str, preco: float):
         json.dump(hist, f, ensure_ascii=False, indent=2)
 
 def verificar_novidade(config: dict, ofertas: list) -> list:
-    """
-    Retorna apenas ofertas que sao novas ou com preco menor que o ultimo alerta.
-    Evita mandar o mesmo alerta repetido a cada 6 horas.
-    """
     if not ofertas:
         return []
-
     chave = f"{config['origem']}-{config['destino']}-{config['data_ida']}"
     hist  = ler_historico()
-
-    melhor_preco_atual = ofertas[0]["preco"]
-
+    melhor = ofertas[0]["preco"]
     if chave in hist:
-        preco_anterior = hist[chave]["preco"]
-        if melhor_preco_atual >= preco_anterior:
-            print(f"Preco ({melhor_preco_atual}) nao e menor que o ultimo alerta ({preco_anterior}). Sem notificacao.")
+        anterior = hist[chave]["preco"]
+        if melhor >= anterior:
+            print(f"  Preco ({melhor}) nao menor que anterior ({anterior}). Sem alerta.")
             return []
-        else:
-            print(f"Preco caiu! {preco_anterior} -> {melhor_preco_atual}. Enviando alerta.")
-    else:
-        print("Primeira vez encontrando oferta nesta rota. Enviando alerta.")
-
-    salvar_historico(chave, melhor_preco_atual)
+        print(f"  Preco caiu! R$ {anterior} -> R$ {melhor}")
+    salvar_historico(chave, melhor)
     return ofertas
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  5. MONTA MENSAGEM
+#  6. MONTA MENSAGEM
 # ══════════════════════════════════════════════════════════════════════════════
 
 def montar_mensagem(ofertas: list, config: dict) -> dict:
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+    volta = config.get("data_volta") or "so ida"
 
     if not ofertas:
         texto = (
             f"K-Finder — {agora}\n"
-            f"{config['origem']} -> {config['destino']} | {config['data_ida']}\n\n"
+            f"{config['origem']} -> {config['destino']} | {config['data_ida']} | volta: {volta}\n\n"
             f"Nenhuma oferta abaixo de R$ {config['preco_maximo']} nesta verificacao."
         )
         return {
             "telegram": texto,
-            "email_assunto": "K-Finder: Nenhuma oferta encontrada",
+            "email_assunto": f"K-Finder: Sem ofertas — {config['origem']}->{config['destino']}",
             "email_corpo": f"<p>{texto.replace(chr(10), '<br>')}</p>"
         }
 
-    tg  = f"*K-Finder — {len(ofertas)} oferta(s) encontrada(s)*\n"
+    link = ofertas[0]["link"]
+
+    # Telegram
+    tg  = f"*K-Finder — {len(ofertas)} oferta(s)*\n"
     tg += f"{agora}\n"
-    tg += f"{config['origem']} -> {config['destino']} | {config['data_ida']}\n"
+    tg += f"*{config['origem']} -> {config['destino']}*\n"
+    tg += f"Ida: {config['data_ida']} | Volta: {volta}\n"
     tg += f"Criterio: ate R$ {config['preco_maximo']}\n"
     tg += "---\n\n"
 
@@ -210,8 +226,10 @@ def montar_mensagem(ofertas: list, config: dict) -> dict:
         tg += f"   Escalas: {o['escalas']}\n"
         tg += f"   Saida: {o['horario_ida']}\n\n"
 
+    tg += f"[Ver no Google Flights]({link})\n"
     tg += "_K-Finder · KenLogic Solutions_"
 
+    # E-mail HTML
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;">
       <div style="background:#1a73e8;color:white;padding:20px;">
@@ -231,7 +249,12 @@ def montar_mensagem(ofertas: list, config: dict) -> dict:
           &nbsp;|&nbsp; {o['escalas']} escala(s)
           &nbsp;|&nbsp; Saida: {o['horario_ida']}
         </div>"""
-    html += """
+    html += f"""
+        <div style="text-align:center;margin-top:20px;">
+          <a href="{link}" style="background:#1a73e8;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;">
+            Ver no Google Flights
+          </a>
+        </div>
       </div>
       <div style="background:#f1f3f4;padding:12px;text-align:center;font-size:12px;color:#888;">
         K-Finder &middot; KenLogic Solutions
@@ -240,13 +263,13 @@ def montar_mensagem(ofertas: list, config: dict) -> dict:
 
     return {
         "telegram": tg,
-        "email_assunto": f"K-Finder: {len(ofertas)} oferta(s) para {config['destino']} ate R$ {config['preco_maximo']}",
+        "email_assunto": f"K-Finder: {len(ofertas)} oferta(s) — {config['origem']}->{config['destino']} ate R$ {config['preco_maximo']}",
         "email_corpo": html,
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  6. ENVIOS
+#  7. ENVIOS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def enviar_telegram(texto: str):
@@ -255,9 +278,13 @@ def enviar_telegram(texto: str):
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "Markdown"}, timeout=10)
+        r = requests.post(url, json={
+            "chat_id":    TELEGRAM_CHAT_ID,
+            "text":       texto,
+            "parse_mode": "Markdown",
+        }, timeout=10)
         if r.status_code == 200:
-            print("  Telegram: mensagem enviada.")
+            print("  Telegram: enviado.")
         else:
             print(f"❌ Erro Telegram: {r.text}")
     except Exception as e:
@@ -277,28 +304,34 @@ def enviar_email(assunto: str, corpo_html: str):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(EMAIL_REMETENTE, EMAIL_SENHA_APP)
             server.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
-        print("  E-mail: mensagem enviada.")
+        print("  E-mail: enviado.")
     except Exception as e:
         print(f"❌ Erro E-mail: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  7. EXECUCAO PRINCIPAL
+#  8. EXECUCAO PRINCIPAL — processa todas as rotas
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     print("=" * 55)
-    print("  K-FINDER v3.0 — KenLogic Solutions")
+    print("  K-FINDER v3.1 — KenLogic Solutions")
     print("=" * 55)
 
-    config        = ler_config()
-    todos_os_voos = buscar_passagens(config)
-    ofertas       = filtrar_ofertas(todos_os_voos, config)
-    novas_ofertas = verificar_novidade(config, ofertas)
-    mensagens     = montar_mensagem(novas_ofertas, config)
+    rotas = ler_rotas()
+    print(f"\n{len(rotas)} rota(s) para verificar.\n")
 
-    print("\nEnviando notificacoes...")
-    enviar_telegram(mensagens["telegram"])
-    enviar_email(mensagens["email_assunto"], mensagens["email_corpo"])
+    for i, config in enumerate(rotas, 1):
+        print(f"--- Rota {i}/{len(rotas)} ---")
+        voos    = buscar_passagens(config)
+        ofertas = filtrar_ofertas(voos, config)
+        novas   = verificar_novidade(config, ofertas)
+        msgs    = montar_mensagem(novas, config)
 
-    print("\nK-Finder finalizado.")
+        if novas:
+            print(f"  Enviando alertas para rota {config['origem']}->{config['destino']}...")
+            enviar_telegram(msgs["telegram"])
+            enviar_email(msgs["email_assunto"], msgs["email_corpo"])
+        print()
+
+    print("K-Finder finalizado.")

@@ -1,11 +1,10 @@
 """
-K-FINDER — Bot Telegram v1.2
+K-FINDER — Bot Telegram v1.3
 KenLogic Solutions
 
-Melhorias:
 - Responde para cada usuario no chat certo
-- Comando /buscar_agora para buscar na hora
-- Lista de usuarios permitidos facil de editar
+- /buscar_agora busca e responde para quem pediu
+- Multiplas rotas (adicionar/remover/listar)
 """
 
 import os
@@ -23,27 +22,16 @@ CONFIG_FILE      = "config.json"
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  USUARIOS PERMITIDOS
-#  Para adicionar alguem novo:
-#  1. Peca para a pessoa mandar qualquer msg pro bot (ex: /start)
-#  2. O terminal mostra: "Mensagem ignorada de chat desconhecido: 123456789"
-#  3. Copie esse numero e adicione na lista abaixo (remova o # da frente)
+#  1. Peca para a pessoa mandar /start pro bot
+#  2. Terminal mostra: "Mensagem ignorada de chat desconhecido: 123456789"
+#  3. Copie o numero e adicione abaixo (remova o #)
 # ══════════════════════════════════════════════════════════════════════════════
 
 USUARIOS_PERMITIDOS = [
-    os.getenv("TELEGRAM_CHAT_ID"),   # voce (dono do bot)
+    os.getenv("TELEGRAM_CHAT_ID"),   # voce (dono)
     # "123456789",                   # padrasto
     # "987654321",                   # outro usuario
 ]
-
-CONFIG_PADRAO = {
-    "origem":       "LDB",
-    "destino":      "BPS",
-    "data_ida":     "2026-03-15",
-    "data_volta":   "2026-03-22",
-    "adultos":      1,
-    "preco_minimo": 0,
-    "preco_maximo": 600,
-}
 
 CIDADES = {
     "londrina": "LDB", "sao paulo": "GRU", "guarulhos": "GRU",
@@ -61,23 +49,30 @@ CIDADES = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CONFIG
+#  CONFIG — lista de rotas
 # ══════════════════════════════════════════════════════════════════════════════
 
-def ler_config() -> dict:
+def ler_rotas() -> list:
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return CONFIG_PADRAO.copy()
+            data = json.load(f)
+            if "rotas" in data:
+                return data["rotas"]
+            return [data]
+    return []
 
-
-def salvar_config(config: dict):
+def salvar_rotas(rotas: list):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+        json.dump({"rotas": rotas}, f, ensure_ascii=False, indent=2)
+
+def proximo_id(rotas: list) -> int:
+    if not rotas:
+        return 1
+    return max(r.get("id", 0) for r in rotas) + 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TELEGRAM — envia para o chat de quem mandou a mensagem
+#  TELEGRAM — envia para o chat de quem pediu
 # ══════════════════════════════════════════════════════════════════════════════
 
 def enviar(chat_id: str, texto: str):
@@ -89,18 +84,18 @@ def enviar(chat_id: str, texto: str):
             "parse_mode": "Markdown",
         }, timeout=10)
     except Exception as e:
-        print(f"❌ Erro ao enviar Telegram: {e}")
+        print(f"❌ Erro Telegram: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ESTADO DE CADA USUARIO (cada um tem seu proprio fluxo)
+#  ESTADO POR USUARIO
 # ══════════════════════════════════════════════════════════════════════════════
 
-estados = {}  # { "chat_id": {"aguardando": "origem", "nova_config": {...}} }
+estados = {}  # { chat_id: { "aguardando": "...", "nova_config": {...} } }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PROCESSAMENTO DE COMANDOS
+#  PROCESSAMENTO
 # ══════════════════════════════════════════════════════════════════════════════
 
 def resolver_iata(texto: str) -> str:
@@ -117,70 +112,107 @@ def processar(chat_id: str, texto: str):
     texto = texto.strip()
     lower = texto.lower()
 
-    # ── /ajuda ────────────────────────────────────────────────────────────────
+    # /ajuda
     if lower in ["/ajuda", "/help", "/start"]:
         enviar(chat_id,
             "*K-Finder — Comandos:*\n\n"
-            "/buscar       — configurar nova busca\n"
-            "/buscar\\_agora — buscar passagens agora mesmo\n"
-            "/status       — ver configuracao atual\n"
-            "/ajuda        — ver esta mensagem\n\n"
-            "_O sistema tambem busca automaticamente a cada 6h._"
+            "/adicionar     — adicionar nova rota\n"
+            "/listar        — ver todas as rotas ativas\n"
+            "/remover       — remover uma rota\n"
+            "/buscar\\_agora — buscar passagens agora\n"
+            "/ajuda         — esta mensagem\n\n"
+            "_Busca automatica a cada 6h pelo GitHub Actions._"
         )
         return
 
-    # ── /status ───────────────────────────────────────────────────────────────
-    if lower in ["/status", "/config"]:
-        c = ler_config()
-        volta = c.get("data_volta") or "so ida"
-        enviar(chat_id,
-            f"*Configuracao atual:*\n\n"
-            f"Rota: *{c['origem']} -> {c['destino']}*\n"
-            f"Ida: {c['data_ida']}\n"
-            f"Volta: {volta}\n"
-            f"Adultos: {c['adultos']}\n"
-            f"Preco maximo: R$ {c['preco_maximo']}"
-        )
-        return
-
-    # ── /buscar_agora — roda o kfinder.py imediatamente ──────────────────────
-    if lower == "/buscar_agora":
-        c = ler_config()
-        enviar(chat_id,
-            f"Iniciando busca agora...\n"
-            f"Rota: *{c['origem']} -> {c['destino']}* | {c['data_ida']}\n"
-            f"Isso pode demorar ~30 segundos."
-        )
-        try:
-            resultado = subprocess.run(
-                ["python", "kfinder.py"],
-                capture_output=True, text=True, timeout=120
+    # /listar
+    if lower == "/listar":
+        rotas = ler_rotas()
+        if not rotas:
+            enviar(chat_id, "Nenhuma rota cadastrada.\nUse /adicionar para comecar.")
+            return
+        msg = "*Rotas ativas:*\n\n"
+        for r in rotas:
+            volta = r.get("data_volta") or "so ida"
+            msg += (
+                f"*#{r['id']} — {r['origem']} -> {r['destino']}*\n"
+                f"   Ida: {r['data_ida']} | Volta: {volta}\n"
+                f"   Preco maximo: R$ {r['preco_maximo']}\n\n"
             )
-            if resultado.returncode == 0:
-                enviar(chat_id, "Busca concluida! Verifique as notificacoes acima.")
-            else:
-                enviar(chat_id, f"❌ Erro na busca:\n{resultado.stderr[:500]}")
-        except subprocess.TimeoutExpired:
-            enviar(chat_id, "❌ A busca demorou demais. Tente novamente.")
-        except Exception as e:
-            enviar(chat_id, f"❌ Erro: {e}")
+        msg += "_Use /remover para excluir uma rota._"
+        enviar(chat_id, msg)
         return
 
-    # ── /buscar — inicia fluxo passo a passo ─────────────────────────────────
-    if lower == "/buscar":
+    # /remover
+    if lower == "/remover":
+        rotas = ler_rotas()
+        if not rotas:
+            enviar(chat_id, "Nenhuma rota para remover.")
+            return
+        msg = "*Qual rota deseja remover?*\n\n"
+        for r in rotas:
+            msg += f"#{r['id']} — {r['origem']} -> {r['destino']} | {r['data_ida']} | ate R$ {r['preco_maximo']}\n"
+        msg += "\nDigite o numero da rota (ex: _1_)"
+        estados[chat_id] = {"aguardando": "remover_id"}
+        enviar(chat_id, msg)
+        return
+
+    # /adicionar
+    if lower == "/adicionar":
         estados[chat_id] = {"aguardando": "origem", "nova_config": {}}
         enviar(chat_id,
-            "*Nova busca — Passo 1 de 5*\n\n"
-            "Qual a *cidade de origem*?\n\n"
-            "Pode digitar o nome ou a sigla IATA:\n"
+            "*Adicionar rota — Passo 1 de 5*\n\n"
+            "Qual a *cidade de origem*?\n"
             "ex: _Londrina_ ou _LDB_"
         )
         return
 
-    # ── Fluxo passo a passo ───────────────────────────────────────────────────
+    # /buscar_agora
+    if lower == "/buscar_agora":
+        rotas = ler_rotas()
+        if not rotas:
+            enviar(chat_id, "Nenhuma rota cadastrada. Use /adicionar primeiro.")
+            return
+        enviar(chat_id,
+            f"Iniciando busca para {len(rotas)} rota(s)...\n"
+            "Isso pode demorar ~30s por rota."
+        )
+        try:
+            resultado = subprocess.run(
+                ["python", "kfinder.py"],
+                capture_output=True, text=True, timeout=300
+            )
+            if resultado.returncode == 0:
+                enviar(chat_id, "Busca concluida! Alertas enviados se houver ofertas.")
+            else:
+                enviar(chat_id, f"❌ Erro na busca:\n`{resultado.stderr[:400]}`")
+        except subprocess.TimeoutExpired:
+            enviar(chat_id, "❌ Busca demorou demais. Tente novamente.")
+        except Exception as e:
+            enviar(chat_id, f"❌ Erro: {e}")
+        return
+
+    # Fluxo passo a passo
     if chat_id in estados:
         etapa = estados[chat_id]["aguardando"]
-        cfg   = estados[chat_id]["nova_config"]
+
+        # Remover rota
+        if etapa == "remover_id":
+            try:
+                rid   = int(texto.strip().replace("#", ""))
+                rotas = ler_rotas()
+                nova  = [r for r in rotas if r.get("id") != rid]
+                if len(nova) == len(rotas):
+                    enviar(chat_id, f"❌ Rota #{rid} nao encontrada.")
+                else:
+                    salvar_rotas(nova)
+                    enviar(chat_id, f"Rota #{rid} removida.\n\nRotas restantes: {len(nova)}")
+                del estados[chat_id]
+            except ValueError:
+                enviar(chat_id, "❌ Digite apenas o numero da rota.\nex: _1_")
+            return
+
+        cfg = estados[chat_id].get("nova_config", {})
 
         if etapa == "origem":
             cfg["origem"] = resolver_iata(texto)
@@ -188,7 +220,7 @@ def processar(chat_id: str, texto: str):
             enviar(chat_id,
                 f"Origem: *{cfg['origem']}*\n\n"
                 "*Passo 2 de 5* — Qual o *destino*?\n"
-                "ex: _Sao Paulo_, _GRU_, _Salvador_"
+                "ex: _Salvador_, _SSA_, _Porto Seguro_"
             )
 
         elif etapa == "destino":
@@ -210,7 +242,7 @@ def processar(chat_id: str, texto: str):
                     f"Ida: *{texto.strip()}*\n\n"
                     "*Passo 4 de 5* — Qual a *data de volta*?\n"
                     "Formato: DD/MM/AAAA\n"
-                    "Se for so ida, mande: _nao_"
+                    "Para so ida, mande: _nao_"
                 )
             except ValueError:
                 enviar(chat_id, "❌ Data invalida. Use DD/MM/AAAA\nex: _15/05/2026_")
@@ -223,7 +255,7 @@ def processar(chat_id: str, texto: str):
                     dt = datetime.strptime(texto.strip(), "%d/%m/%Y")
                     cfg["data_volta"] = dt.strftime("%Y-%m-%d")
                 except ValueError:
-                    enviar(chat_id, "❌ Data invalida. Use DD/MM/AAAA ou _nao_ para so ida.")
+                    enviar(chat_id, "❌ Data invalida. Use DD/MM/AAAA ou _nao_.")
                     return
 
             estados[chat_id]["aguardando"] = "preco"
@@ -238,33 +270,37 @@ def processar(chat_id: str, texto: str):
                 preco = float(texto.replace("R$", "").replace(".", "").replace(",", ".").strip())
                 cfg["preco_maximo"] = preco
                 cfg["preco_minimo"] = 0
-                cfg["adultos"]      = cfg.get("adultos", 1)
+                cfg["adultos"]      = 1
 
-                salvar_config(cfg)
+                rotas = ler_rotas()
+                cfg["id"] = proximo_id(rotas)
+                rotas.append(cfg)
+                salvar_rotas(rotas)
                 del estados[chat_id]
 
                 volta = cfg.get("data_volta") or "so ida"
                 enviar(chat_id,
-                    f"Configuracao salva!\n\n"
-                    f"Rota: *{cfg['origem']} -> {cfg['destino']}*\n"
-                    f"Ida: {cfg['data_ida']}\n"
-                    f"Volta: {volta}\n"
+                    f"Rota #{cfg['id']} adicionada!\n\n"
+                    f"*{cfg['origem']} -> {cfg['destino']}*\n"
+                    f"Ida: {cfg['data_ida']} | Volta: {volta}\n"
                     f"Preco maximo: R$ {cfg['preco_maximo']:.0f}\n\n"
+                    f"Total de rotas ativas: {len(rotas)}\n\n"
                     f"Use /buscar\\_agora para buscar imediatamente\n"
-                    f"ou aguarde a busca automatica a cada 6h."
+                    f"ou /listar para ver todas as rotas."
                 )
             except ValueError:
                 enviar(chat_id, "❌ Preco invalido. Digite apenas o numero.\nex: _600_")
 
         return
 
-    # ── Mensagem nao reconhecida ──────────────────────────────────────────────
+    # Mensagem nao reconhecida
     enviar(chat_id,
         "Nao entendi. Use:\n\n"
-        "/buscar       — nova busca\n"
+        "/adicionar     — nova rota\n"
+        "/listar        — ver rotas\n"
+        "/remover       — remover rota\n"
         "/buscar\\_agora — buscar agora\n"
-        "/status       — configuracao atual\n"
-        "/ajuda        — ajuda"
+        "/ajuda         — ajuda"
     )
 
 
@@ -274,7 +310,7 @@ def processar(chat_id: str, texto: str):
 
 def rodar_bot():
     print("=" * 55)
-    print("  K-FINDER BOT v1.2 — aguardando mensagens")
+    print("  K-FINDER BOT v1.3 — aguardando mensagens")
     print("  Envie /ajuda no Telegram para comecar")
     print("  Pressione Ctrl+C para parar")
     print("=" * 55)
@@ -298,12 +334,12 @@ def rodar_bot():
                 chat_id = str(msg.get("chat", {}).get("id", ""))
 
                 if chat_id not in [str(u) for u in USUARIOS_PERMITIDOS if u]:
-                    print(f"Mensagem ignorada de chat desconhecido: {chat_id}")
+                    print(f"Ignorado: {chat_id}")
                     continue
 
                 texto = msg.get("text", "")
                 if texto:
-                    print(f"[{chat_id}] Recebido: {texto}")
+                    print(f"[{chat_id}] {texto}")
                     processar(chat_id, texto)
 
         except KeyboardInterrupt:
