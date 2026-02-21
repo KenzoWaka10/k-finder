@@ -21,6 +21,20 @@ TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CONFIG_FILE      = "config.json"
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  USUARIOS PERMITIDOS
+#  Para adicionar alguem novo:
+#  1. Peca para a pessoa mandar qualquer msg pro bot
+#  2. O terminal mostra: "Mensagem ignorada de chat desconhecido: 123456"
+#  3. Copie esse numero e adicione na lista abaixo (sem comentario #)
+# ══════════════════════════════════════════════════════════════════════════════
+
+USUARIOS_PERMITIDOS = [
+    os.getenv("TELEGRAM_CHAT_ID"),   # voce (dono do bot)
+     "2008964164",                   # padrasto
+    # "987654321",                   # outro usuario
+]
+
 CONFIG_PADRAO = {
     "origem":       "LDB",
     "destino":      "BPS",
@@ -259,7 +273,7 @@ def rodar_bot():
                     continue
 
                 chat_id = str(msg.get("chat", {}).get("id", ""))
-                if chat_id != str(TELEGRAM_CHAT_ID):
+                if chat_id not in [str(u) for u in USUARIOS_PERMITIDOS if u]:
                     print(f"Mensagem ignorada de chat desconhecido: {chat_id}")
                     continue
 
