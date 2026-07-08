@@ -21,14 +21,19 @@ jobs:
           python-version: "3.12"
 
       - name: Instalar dependencias
-        run: pip install apify-client requests python-dotenv openai
+        run: pip install apify-client requests python-dotenv
 
       - name: Rodar o K-Finder
         env:
-          APIFY_TOKEN:        ${{ secrets.APIFY_TOKEN }}
-          TELEGRAM_TOKEN:     ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-          EMAIL_REMETENTE:    ${{ secrets.EMAIL_REMETENTE }}
-          EMAIL_SENHA_APP:    ${{ secrets.EMAIL_SENHA_APP }}
-          EMAIL_DESTINATARIO: ${{ secrets.EMAIL_DESTINATARIO }}
+          APIFY_TOKEN:         ${{ secrets.APIFY_TOKEN }}
+          TELEGRAM_TOKEN:      ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+          EMAIL_REMETENTE:     ${{ secrets.EMAIL_REMETENTE }}
+          EMAIL_SENHA_APP:     ${{ secrets.EMAIL_SENHA_APP }}
+          EMAIL_DESTINATARIO:  ${{ secrets.EMAIL_DESTINATARIO }}
         run: python kfinder.py
+
+# Desativa notificacoes de email para execucoes automaticas (schedule)
+# Voce so recebe email se o workflow falhar E foi disparado manualmente
+permissions:
+  actions: read
