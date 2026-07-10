@@ -1,14 +1,13 @@
 """
-K-FINDER — Bot Telegram v3.0
+K-FINDER — Bot Telegram v3.1
 KenLogic Solutions
 
-Novidades v3.0:
-- Inline keyboard em todos os passos
-- Selecao de cidades por botoes (paginado)
-- Selecao de data por calendario de botoes
-- Precos sugeridos + digitar manual
-- Voltar passo, cancelar, confirmar antes de salvar
-- Multi-usuario real
+Novidades v3.1:
+- Sistema de aprovacao de usuarios pelo admin
+- Admin recebe notificacao quando alguem tenta usar o bot
+- Aprovar/recusar com botoes
+- Painel /admin para gerenciar usuarios
+- Alertas vao para o chat correto de cada usuario
 """
 
 import os
@@ -22,16 +21,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # admin (voce)
 CONFIG_FILE      = "config.json"
 
-USUARIOS_PERMITIDOS = [
-    os.getenv("TELEGRAM_CHAT_ID"),
-    # "123456789",
-    # "987654321",
-]
+PRECOS_SUGERIDOS = [300, 500, 700, 900, 1200, 1500, 2000, 2500]
+CIDADES_POR_PAG  = 8
 
-# Cidades ordenadas por popularidade para exibir nos botoes
 CIDADES_LISTA = [
     ("São Paulo (GRU)",    "GRU"),
     ("São Paulo (CGH)",    "CGH"),
@@ -66,28 +61,96 @@ CIDADES_LISTA = [
     ("Palmas",             "PMW"),
 ]
 
-PRECOS_SUGERIDOS = [300, 500, 700, 900, 1200, 1500, 2000, 2500]
-CIDADES_POR_PAG  = 8   # botoes de cidade por pagina (2 colunas = 4 linhas)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CONFIG
+#  CONFIG — usuarios + rotas
+#
+#  Estrutura do config.json:
+#  {
+#    "usuarios_aprovados": {
+#      "123456789": { "nome": "Padrasto", "aprovado_em": "..." },
+#    },
+#    "usuarios_pendentes": {
+#      "987654321": { "nome": "Fulano", "pediu_em": "..." }
+#    },
+#    "usuarios": {
+#      "123456789": { "rotas": [...] }
+#    }
+#  }
 # ══════════════════════════════════════════════════════════════════════════════
 
 def ler_config() -> dict:
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
+            # Migra formato antigo
             if "rotas" in data and "usuarios" not in data:
                 chat_id_dono = str(TELEGRAM_CHAT_ID or "admin")
-                return {"usuarios": {chat_id_dono: {"rotas": data["rotas"]}}}
-            if "usuarios" in data:
-                return data
-    return {"usuarios": {}}
+                return {
+                    "usuarios_aprovados": {chat_id_dono: {"nome": "Admin"}},
+                    "usuarios_pendentes": {},
+                    "usuarios": {chat_id_dono: {"rotas": data["rotas"]}},
+                }
+            # Garante campos existem
+            if "usuarios_aprovados" not in data:
+                data["usuarios_aprovados"] = {}
+            if "usuarios_pendentes" not in data:
+                data["usuarios_pendentes"] = {}
+            if "usuarios" not in data:
+                data["usuarios"] = {}
+            return data
+    # Config novo vazio — admin ja aprovado automaticamente
+    admin_id = str(TELEGRAM_CHAT_ID or "")
+    return {
+        "usuarios_aprovados": {admin_id: {"nome": "Admin", "aprovado_em": "inicio"}},
+        "usuarios_pendentes": {},
+        "usuarios": {},
+    }
 
 def salvar_config(config: dict):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+
+def is_admin(chat_id: str) -> bool:
+    return str(chat_id) == str(TELEGRAM_CHAT_ID)
+
+def is_aprovado(chat_id: str) -> bool:
+    if is_admin(chat_id):
+        return True
+    config = ler_config()
+    return str(chat_id) in config.get("usuarios_aprovados", {})
+
+def is_pendente(chat_id: str) -> bool:
+    config = ler_config()
+    return str(chat_id) in config.get("usuarios_pendentes", {})
+
+def aprovar_usuario(chat_id: str, nome: str):
+    config = ler_config()
+    config["usuarios_aprovados"][str(chat_id)] = {
+        "nome": nome,
+        "aprovado_em": datetime.now().strftime("%d/%m/%Y %H:%M"),
+    }
+    config["usuarios_pendentes"].pop(str(chat_id), None)
+    salvar_config(config)
+
+def recusar_usuario(chat_id: str):
+    config = ler_config()
+    config["usuarios_pendentes"].pop(str(chat_id), None)
+    salvar_config(config)
+
+def remover_usuario(chat_id: str):
+    config = ler_config()
+    config["usuarios_aprovados"].pop(str(chat_id), None)
+    config["usuarios"].pop(str(chat_id), None)
+    salvar_config(config)
+
+def adicionar_pendente(chat_id: str, nome: str):
+    config = ler_config()
+    config["usuarios_pendentes"][str(chat_id)] = {
+        "nome": nome,
+        "pediu_em": datetime.now().strftime("%d/%m/%Y %H:%M"),
+    }
+    salvar_config(config)
 
 def ler_rotas(chat_id: str) -> list:
     config = ler_config()
@@ -95,8 +158,6 @@ def ler_rotas(chat_id: str) -> list:
 
 def salvar_rotas(chat_id: str, rotas: list):
     config = ler_config()
-    if "usuarios" not in config:
-        config["usuarios"] = {}
     if str(chat_id) not in config["usuarios"]:
         config["usuarios"][str(chat_id)] = {}
     config["usuarios"][str(chat_id)]["rotas"] = rotas
@@ -107,7 +168,7 @@ def proximo_id(rotas: list) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TELEGRAM — mensagens e callbacks
+#  TELEGRAM
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _post(endpoint: str, payload: dict):
@@ -132,10 +193,7 @@ def editar(chat_id: str, message_id: int, texto: str, teclado=None):
         "text":       texto,
         "parse_mode": "Markdown",
     }
-    if teclado:
-        payload["reply_markup"] = {"inline_keyboard": teclado}
-    else:
-        payload["reply_markup"] = {"inline_keyboard": []}
+    payload["reply_markup"] = {"inline_keyboard": teclado or []}
     return _post("editMessageText", payload)
 
 def responder_callback(callback_id: str, texto: str = ""):
@@ -147,16 +205,6 @@ def responder_callback(callback_id: str, texto: str = ""):
 # ══════════════════════════════════════════════════════════════════════════════
 
 estados = {}
-# {
-#   chat_id: {
-#     "passo": "origem" | "destino" | "data_ida" | "data_volta" | "preco" | "confirmar",
-#     "modo":  "adicionar" | "editar",
-#     "editando_id": N,
-#     "cfg": { origem, destino, data_ida, data_volta, preco_maximo },
-#     "msg_id": message_id do menu atual (para editar no lugar),
-#     "digitando_preco": bool,
-#   }
-# }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -195,16 +243,12 @@ def teclado_cidades(pagina: int = 0, prefixo: str = "cidade_orig") -> list:
     inicio = pagina * CIDADES_POR_PAG
     fim    = inicio + CIDADES_POR_PAG
     bloco  = CIDADES_LISTA[inicio:fim]
-
-    # 2 botoes por linha
     linhas = []
     for i in range(0, len(bloco), 2):
         linha = []
         for nome, cod in bloco[i:i+2]:
             linha.append({"text": nome, "callback_data": f"{prefixo}:{cod}"})
         linhas.append(linha)
-
-    # Navegacao
     nav = []
     if pagina > 0:
         nav.append({"text": "⬅️ Anterior", "callback_data": f"{prefixo}_pag:{pagina-1}"})
@@ -212,58 +256,36 @@ def teclado_cidades(pagina: int = 0, prefixo: str = "cidade_orig") -> list:
         nav.append({"text": "Próxima ➡️", "callback_data": f"{prefixo}_pag:{pagina+1}"})
     if nav:
         linhas.append(nav)
-
     linhas.append([{"text": "❌ Cancelar", "callback_data": "cancelar"}])
     return linhas
 
 def teclado_calendario(ano: int, mes: int, prefixo: str) -> list:
-    """Calendário de dias como inline keyboard."""
     linhas = []
-
-    # Cabeçalho: mês/ano + navegação
-    nome_mes = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
-                "Jul", "Ago", "Set", "Out", "Nov", "Dez"][mes]
+    nome_mes = ["","Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"][mes]
     linhas.append([
-        {"text": "◀️", "callback_data": f"{prefixo}_mes:{ano}:{mes-1 if mes > 1 else 12}:{1 if mes > 1 else ano-1}"},
+        {"text": "◀️", "callback_data": f"{prefixo}_mes:{ano}:{mes-1 if mes>1 else 12}:{ano if mes>1 else ano-1}"},
         {"text": f"  {nome_mes} {ano}  ", "callback_data": "ignore"},
-        {"text": "▶️", "callback_data": f"{prefixo}_mes:{ano}:{mes+1 if mes < 12 else 1}:{ano if mes < 12 else ano+1}"},
+        {"text": "▶️", "callback_data": f"{prefixo}_mes:{ano}:{mes+1 if mes<12 else 1}:{ano if mes<12 else ano+1}"},
     ])
-
-    # Dias da semana
     linhas.append([
-        {"text": "Dom", "callback_data": "ignore"},
-        {"text": "Seg", "callback_data": "ignore"},
-        {"text": "Ter", "callback_data": "ignore"},
-        {"text": "Qua", "callback_data": "ignore"},
-        {"text": "Qui", "callback_data": "ignore"},
-        {"text": "Sex", "callback_data": "ignore"},
-        {"text": "Sáb", "callback_data": "ignore"},
+        {"text": d, "callback_data": "ignore"}
+        for d in ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"]
     ])
-
-    # Dias do mes
     primeiro_dia, total_dias = calendar.monthrange(ano, mes)
-    primeiro_dia = (primeiro_dia + 1) % 7  # calendario br: domingo=0
-    hoje = date.today()
-
+    primeiro_dia = (primeiro_dia + 1) % 7
+    hoje  = date.today()
     semana = ["  "] * primeiro_dia
     for dia in range(1, total_dias + 1):
         d = date(ano, mes, dia)
         if d < hoje:
             semana.append({"text": "·", "callback_data": "ignore"})
         else:
-            semana.append({
-                "text": str(dia),
-                "callback_data": f"{prefixo}:{ano}-{mes:02d}-{dia:02d}"
-            })
+            semana.append({"text": str(dia), "callback_data": f"{prefixo}:{ano}-{mes:02d}-{dia:02d}"})
         if len(semana) == 7:
             linhas.append([b for b in semana if b != "  "])
             semana = []
     if semana:
         linhas.append([b for b in semana if b != "  "])
-
-    # Rodape
-    volta_cb = "voltar_para_data_ida" if "volta" in prefixo else "voltar_para_origem"
-    # Ajusta o voltar conforme o passo
     linhas.append([
         {"text": "⬅️ Voltar",    "callback_data": f"voltar:{prefixo}"},
         {"text": "❌ Cancelar", "callback_data": "cancelar"},
@@ -293,22 +315,9 @@ def teclado_confirmar() -> list:
         [{"text": "❌ Cancelar", "callback_data": "cancelar"}],
     ]
 
-def teclado_volta_opcional() -> list:
-    hoje = date.today()
-    ano, mes = hoje.year, hoje.month
-    return [
-        [{"text": "✈️ Só ida (sem volta)", "callback_data": "data_volta:nao"}],
-        [
-            {"text": "⬅️ Voltar",    "callback_data": "voltar:data_volta"},
-            {"text": "❌ Cancelar", "callback_data": "cancelar"},
-        ],
-    ]
-
 def teclado_menu_rotas(rotas: list, acao: str) -> list:
-    """Lista de rotas como botoes para selecionar."""
     linhas = []
     for r in rotas:
-        volta = formatar_data(r["data_volta"]) if r.get("data_volta") else "só ida"
         label = f"#{r['id']} {r['origem']}→{r['destino']} | {formatar_data(r['data_ida'])}"
         linhas.append([{"text": label, "callback_data": f"{acao}:{r['id']}"}])
     linhas.append([{"text": "❌ Cancelar", "callback_data": "cancelar"}])
@@ -327,9 +336,26 @@ def teclado_menu_principal() -> list:
         [{"text": "🔍 Buscar agora",       "callback_data": "cmd:buscar_agora"}],
     ]
 
+def teclado_aprovacao(chat_id: str, nome: str) -> list:
+    return [[
+        {"text": "✅ Aprovar",  "callback_data": f"aprovar:{chat_id}:{nome}"},
+        {"text": "❌ Recusar", "callback_data": f"recusar:{chat_id}"},
+    ]]
+
+def teclado_admin_usuarios(usuarios: dict) -> list:
+    linhas = []
+    for uid, info in usuarios.items():
+        nome = info.get("nome", uid)
+        linhas.append([{
+            "text": f"🗑️ Remover {nome}",
+            "callback_data": f"admin_remover:{uid}"
+        }])
+    linhas.append([{"text": "✅ Fechar", "callback_data": "cancelar"}])
+    return linhas
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  FLUXO: iniciar passo de cidade
+#  FLUXO DE ADICIONAR / EDITAR
 # ══════════════════════════════════════════════════════════════════════════════
 
 def mostrar_passo_origem(chat_id: str, msg_id: int = None):
@@ -337,13 +363,9 @@ def mostrar_passo_origem(chat_id: str, msg_id: int = None):
     cfg    = estado["cfg"]
     modo   = estado["modo"]
     titulo = "✏️ Editando rota" if modo == "editar" else "➕ Nova rota"
-    texto  = (
-        f"{titulo}\n\n"
-        f"{resumo_cfg(cfg) if cfg.get('origem') else ''}\n\n"
-        f"*Passo 1/5 — Cidade de origem:*\n"
-        "_Selecione uma cidade:_"
-    ).strip()
-
+    texto  = f"{titulo}\n\n*Passo 1/5 — Cidade de origem:*\n_Selecione uma cidade:_"
+    if cfg.get("origem"):
+        texto = f"{titulo}\n\n{resumo_cfg(cfg)}\n\n*Passo 1/5 — Cidade de origem:*\n_Selecione uma cidade:_"
     teclado = teclado_cidades(0, "cidade_orig")
     if msg_id:
         editar(chat_id, msg_id, texto, teclado)
@@ -352,104 +374,72 @@ def mostrar_passo_origem(chat_id: str, msg_id: int = None):
         estado["msg_id"] = r.get("result", {}).get("message_id")
 
 def mostrar_passo_destino(chat_id: str):
-    estado  = estados[chat_id]
-    cfg     = estado["cfg"]
-    msg_id  = estado["msg_id"]
-    modo    = estado["modo"]
-    titulo  = "✏️ Editando rota" if modo == "editar" else "➕ Nova rota"
-    texto   = (
-        f"{titulo}\n\n"
-        f"{resumo_cfg(cfg)}\n\n"
-        f"*Passo 2/5 — Cidade de destino:*\n"
-        "_Selecione uma cidade:_"
+    estado = estados[chat_id]
+    cfg    = estado["cfg"]
+    modo   = estado["modo"]
+    titulo = "✏️ Editando rota" if modo == "editar" else "➕ Nova rota"
+    editar(chat_id, estado["msg_id"],
+        f"{titulo}\n\n{resumo_cfg(cfg)}\n\n*Passo 2/5 — Cidade de destino:*\n_Selecione uma cidade:_",
+        teclado_cidades(0, "cidade_dest")
     )
-    editar(chat_id, msg_id, texto, teclado_cidades(0, "cidade_dest"))
 
 def mostrar_passo_data_ida(chat_id: str):
     estado = estados[chat_id]
     cfg    = estado["cfg"]
-    msg_id = estado["msg_id"]
     modo   = estado["modo"]
     titulo = "✏️ Editando rota" if modo == "editar" else "➕ Nova rota"
     hoje   = date.today()
-    ano, mes = hoje.year, hoje.month
-    texto  = (
-        f"{titulo}\n\n"
-        f"{resumo_cfg(cfg)}\n\n"
-        f"*Passo 3/5 — Data de ida:*\n"
-        "_Selecione no calendário:_"
+    editar(chat_id, estado["msg_id"],
+        f"{titulo}\n\n{resumo_cfg(cfg)}\n\n*Passo 3/5 — Data de ida:*\n_Selecione no calendário:_",
+        teclado_calendario(hoje.year, hoje.month, "data_ida")
     )
-    editar(chat_id, msg_id, texto, teclado_calendario(ano, mes, "data_ida"))
 
 def mostrar_passo_data_volta(chat_id: str):
     estado = estados[chat_id]
     cfg    = estado["cfg"]
-    msg_id = estado["msg_id"]
     modo   = estado["modo"]
     titulo = "✏️ Editando rota" if modo == "editar" else "➕ Nova rota"
-    hoje   = date.today()
-    # Começa no mesmo mês da ida ou mês atual
     if cfg.get("data_ida"):
-        dt_ida = datetime.strptime(cfg["data_ida"], "%Y-%m-%d")
-        ano, mes = dt_ida.year, dt_ida.month
+        dt   = datetime.strptime(cfg["data_ida"], "%Y-%m-%d")
+        ano, mes = dt.year, dt.month
     else:
+        hoje = date.today()
         ano, mes = hoje.year, hoje.month
-
     cal = teclado_calendario(ano, mes, "data_volta")
-    # Adiciona botao "so ida" no topo
     cal.insert(0, [{"text": "✈️ Só ida (sem volta)", "callback_data": "data_volta:nao"}])
-
-    texto = (
-        f"{titulo}\n\n"
-        f"{resumo_cfg(cfg)}\n\n"
-        f"*Passo 4/5 — Data de volta:*\n"
-        "_Selecione ou escolha só ida:_"
+    editar(chat_id, estado["msg_id"],
+        f"{titulo}\n\n{resumo_cfg(cfg)}\n\n*Passo 4/5 — Data de volta:*\n_Selecione ou escolha só ida:_",
+        cal
     )
-    editar(chat_id, msg_id, texto, cal)
 
 def mostrar_passo_preco(chat_id: str):
     estado = estados[chat_id]
     cfg    = estado["cfg"]
-    msg_id = estado["msg_id"]
     modo   = estado["modo"]
     titulo = "✏️ Editando rota" if modo == "editar" else "➕ Nova rota"
-    texto  = (
-        f"{titulo}\n\n"
-        f"{resumo_cfg(cfg)}\n\n"
-        f"*Passo 5/5 — Preço máximo:*\n"
-        "_Selecione ou digite um valor:_"
+    editar(chat_id, estado["msg_id"],
+        f"{titulo}\n\n{resumo_cfg(cfg)}\n\n*Passo 5/5 — Preço máximo:*\n_Selecione ou digite um valor:_",
+        teclado_preco()
     )
-    editar(chat_id, msg_id, texto, teclado_preco())
 
 def mostrar_confirmacao(chat_id: str):
     estado = estados[chat_id]
     cfg    = estado["cfg"]
-    msg_id = estado["msg_id"]
     modo   = estado["modo"]
     titulo = "✏️ Confirmar edição" if modo == "editar" else "✅ Confirmar nova rota"
-    texto  = (
-        f"*{titulo}*\n\n"
-        f"{resumo_cfg(cfg)}\n\n"
-        "_Tudo certo?_"
+    editar(chat_id, estado["msg_id"],
+        f"*{titulo}*\n\n{resumo_cfg(cfg)}\n\n_Tudo certo?_",
+        teclado_confirmar()
     )
-    editar(chat_id, msg_id, texto, teclado_confirmar())
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  SALVAR ROTA
-# ══════════════════════════════════════════════════════════════════════════════
 
 def salvar_rota_atual(chat_id: str):
     estado = estados[chat_id]
     cfg    = estado["cfg"]
     modo   = estado["modo"]
     msg_id = estado["msg_id"]
-
     cfg["preco_minimo"] = 0
     cfg["adultos"]      = 1
-
     rotas = ler_rotas(chat_id)
-
     if modo == "editar":
         rid = estado["editando_id"]
         for i, r in enumerate(rotas):
@@ -460,9 +450,7 @@ def salvar_rota_atual(chat_id: str):
         salvar_rotas(chat_id, rotas)
         del estados[chat_id]
         editar(chat_id, msg_id,
-            f"✅ *Rota #{rid} atualizada!*\n\n"
-            f"{resumo_cfg(cfg)}\n\n"
-            "Use /buscar\\_agora ou o menu para continuar.",
+            f"✅ *Rota #{rid} atualizada!*\n\n{resumo_cfg(cfg)}\n\nUse /menu para continuar."
         )
     else:
         cfg["id"] = proximo_id(rotas)
@@ -470,21 +458,50 @@ def salvar_rota_atual(chat_id: str):
         salvar_rotas(chat_id, rotas)
         del estados[chat_id]
         editar(chat_id, msg_id,
-            f"✅ *Rota #{cfg['id']} adicionada!*\n\n"
-            f"{resumo_cfg(cfg)}\n\n"
-            f"📊 Total de rotas ativas: *{len(rotas)}*\n\n"
-            "Use /menu para continuar.",
+            f"✅ *Rota #{cfg['id']} adicionada!*\n\n{resumo_cfg(cfg)}\n\n"
+            f"📊 Total de rotas ativas: *{len(rotas)}*\n\nUse /menu para continuar."
         )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PROCESSAR CALLBACKS (cliques nos botoes)
+#  PAINEL ADMIN
+# ══════════════════════════════════════════════════════════════════════════════
+
+def mostrar_painel_admin(chat_id: str):
+    config    = ler_config()
+    aprovados = config.get("usuarios_aprovados", {})
+    pendentes = config.get("usuarios_pendentes", {})
+
+    # Remove o proprio admin da lista de gerenciamento
+    outros = {k: v for k, v in aprovados.items() if k != str(TELEGRAM_CHAT_ID)}
+
+    msg = "👑 *Painel Admin — K-Finder*\n\n"
+
+    if pendentes:
+        msg += f"⏳ *Pendentes ({len(pendentes)}):*\n"
+        for uid, info in pendentes.items():
+            msg += f"  • {info.get('nome', 'Desconhecido')} (`{uid}`) — {info.get('pediu_em','')}\n"
+        msg += "\n"
+
+    if outros:
+        msg += f"✅ *Aprovados ({len(outros)}):*\n"
+        for uid, info in outros.items():
+            rotas = ler_rotas(uid)
+            msg += f"  • {info.get('nome', 'Desconhecido')} (`{uid}`) — {len(rotas)} rota(s)\n"
+        msg += "\n"
+        enviar(chat_id, msg, teclado_admin_usuarios(outros))
+    else:
+        msg += "_Nenhum usuário aprovado além de você._"
+        enviar(chat_id, msg)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PROCESSAR CALLBACKS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def processar_callback(chat_id: str, callback_id: str, data: str, message_id: int):
     responder_callback(callback_id)
 
-    # Ignorar botoes decorativos
     if data == "ignore":
         return
 
@@ -493,192 +510,208 @@ def processar_callback(chat_id: str, callback_id: str, data: str, message_id: in
         if chat_id in estados:
             msg_id = estados[chat_id].get("msg_id", message_id)
             del estados[chat_id]
-            editar(chat_id, msg_id,
-                "❌ *Operação cancelada.*\n\nUse /menu para voltar ao início."
-            )
+            editar(chat_id, msg_id, "❌ *Operação cancelada.*\n\nUse /menu para voltar.")
+        else:
+            editar(chat_id, message_id, "✅ Fechado.")
         return
 
-    # Confirmar salvar
+    # Confirmar salvar rota
     if data == "confirmar":
         if chat_id in estados:
             salvar_rota_atual(chat_id)
         return
 
-    # Comandos do menu principal
+    # Comandos do menu
     if data.startswith("cmd:"):
-        cmd = data.split(":")[1]
-        processar_comando(chat_id, f"/{cmd}", message_id)
+        processar_comando(chat_id, f"/{data.split(':')[1]}", message_id)
         return
 
-    # Voltar passo
+    # ── APROVACAO DE USUARIOS ──
+
+    if data.startswith("aprovar:"):
+        partes   = data.split(":", 2)
+        uid      = partes[1]
+        nome     = partes[2] if len(partes) > 2 else "Usuário"
+        aprovar_usuario(uid, nome)
+        editar(chat_id, message_id,
+            f"✅ *{nome} aprovado!*\n\nEle já pode usar o bot."
+        )
+        # Avisa o usuario aprovado
+        enviar(uid,
+            "✅ *Acesso aprovado!*\n\n"
+            "Você já pode usar o K-Finder.\n"
+            "Digite /menu para começar!",
+            teclado_menu_principal()
+        )
+        return
+
+    if data.startswith("recusar:"):
+        uid = data.split(":")[1]
+        config = ler_config()
+        nome   = config.get("usuarios_pendentes", {}).get(uid, {}).get("nome", "Usuário")
+        recusar_usuario(uid)
+        editar(chat_id, message_id, f"❌ *{nome} recusado.*")
+        enviar(uid, "❌ Seu acesso ao K-Finder foi recusado.")
+        return
+
+    if data.startswith("admin_remover:"):
+        uid    = data.split(":")[1]
+        config = ler_config()
+        nome   = config.get("usuarios_aprovados", {}).get(uid, {}).get("nome", uid)
+        remover_usuario(uid)
+        editar(chat_id, message_id,
+            f"🗑️ *{nome} removido.*\n\nEle não pode mais usar o bot."
+        )
+        enviar(uid, "⚠️ Seu acesso ao K-Finder foi removido.")
+        return
+
+    # ── VOLTAR PASSO ──
+
     if data.startswith("voltar:"):
-        passo_atual = data.split(":")[1]
+        passo = data.split(":")[1]
         if chat_id not in estados:
             return
-        estado = estados[chat_id]
-        estado["cfg"].pop("digitando_preco", None)
-        estado["digitando_preco"] = False
-        if passo_atual in ["data_volta", "preco", "data_ida_cal"]:
+        estados[chat_id]["digitando_preco"] = False
+        if passo in ["data_volta", "preco"]:
             mostrar_passo_data_ida(chat_id)
-        elif passo_atual == "data_volta_cal":
-            mostrar_passo_data_volta(chat_id)
-        elif passo_atual in ["confirmar", "preco"]:
+        elif passo in ["confirmar"]:
             mostrar_passo_preco(chat_id)
-        elif passo_atual == "destino":
-            mostrar_passo_origem(chat_id, estado["msg_id"])
+        elif passo == "destino":
+            mostrar_passo_origem(chat_id, estados[chat_id]["msg_id"])
+        elif passo == "data_ida":
+            mostrar_passo_destino(chat_id)
         else:
             mostrar_passo_data_volta(chat_id)
         return
 
-    # Paginacao de cidades
-    if "pag:" in data:
+    # ── PAGINACAO CIDADES ──
+
+    if "_pag:" in data:
         prefixo, resto = data.rsplit("_pag:", 1)
         pagina = int(resto)
         if chat_id not in estados:
             return
-        msg_id = estados[chat_id]["msg_id"]
-        editar(chat_id, msg_id,
-            estados[chat_id].get("_ultimo_texto", "Selecione uma cidade:"),
+        editar(chat_id, estados[chat_id]["msg_id"],
+            "Selecione uma cidade:",
             teclado_cidades(pagina, prefixo)
         )
         return
 
-    # Selecao de cidade de origem
+    # ── SELECAO CIDADE ──
+
     if data.startswith("cidade_orig:"):
-        if chat_id not in estados:
-            return
-        cod = data.split(":")[1]
-        estados[chat_id]["cfg"]["origem"] = cod
-        estados[chat_id]["passo"] = "destino"
+        if chat_id not in estados: return
+        estados[chat_id]["cfg"]["origem"] = data.split(":")[1]
         mostrar_passo_destino(chat_id)
         return
 
-    # Selecao de cidade de destino
     if data.startswith("cidade_dest:"):
-        if chat_id not in estados:
-            return
-        cod = data.split(":")[1]
-        estados[chat_id]["cfg"]["destino"] = cod
-        estados[chat_id]["passo"] = "data_ida"
+        if chat_id not in estados: return
+        estados[chat_id]["cfg"]["destino"] = data.split(":")[1]
         mostrar_passo_data_ida(chat_id)
         return
 
-    # Navegacao do calendario
-    if data.startswith("data_ida_mes:") or data.startswith("data_volta_mes:"):
-        if chat_id not in estados:
-            return
-        partes = data.split(":")
-        prefixo_cal = partes[0].replace("_mes", "")
-        ano  = int(partes[1])
-        mes  = int(partes[2])
-        ano_real = int(partes[3]) if len(partes) > 3 else ano
-        msg_id = estados[chat_id]["msg_id"]
-        # Corrige navegacao de ano
-        if mes == 0:
-            mes = 12; ano_real -= 1
-        elif mes == 13:
-            mes = 1; ano_real += 1
-        else:
-            ano_real = ano
-        cfg = estados[chat_id]["cfg"]
-        modo = estados[chat_id]["modo"]
-        titulo = "✏️ Editando rota" if modo == "editar" else "➕ Nova rota"
-        passo_label = "3/5 — Data de ida" if "ida" in prefixo_cal else "4/5 — Data de volta"
+    # ── NAVEGACAO CALENDARIO ──
 
-        cal = teclado_calendario(ano_real, mes, prefixo_cal)
+    if "_mes:" in data:
+        if chat_id not in estados: return
+        partes      = data.split(":")
+        prefixo_cal = partes[0].replace("_mes", "")
+        mes         = int(partes[2])
+        ano         = int(partes[3]) if len(partes) > 3 else int(partes[1])
+        if mes == 0:   mes = 12; ano -= 1
+        elif mes == 13: mes = 1;  ano += 1
+        cfg    = estados[chat_id]["cfg"]
+        modo   = estados[chat_id]["modo"]
+        titulo = "✏️ Editando rota" if modo == "editar" else "➕ Nova rota"
+        label  = "3/5 — Data de ida" if "ida" in prefixo_cal else "4/5 — Data de volta"
+        cal    = teclado_calendario(ano, mes, prefixo_cal)
         if "volta" in prefixo_cal:
             cal.insert(0, [{"text": "✈️ Só ida (sem volta)", "callback_data": "data_volta:nao"}])
-
-        editar(chat_id, msg_id,
-            f"{titulo}\n\n{resumo_cfg(cfg)}\n\n*Passo {passo_label}:*\n_Selecione no calendário:_",
+        editar(chat_id, estados[chat_id]["msg_id"],
+            f"{titulo}\n\n{resumo_cfg(cfg)}\n\n*Passo {label}:*\n_Selecione no calendário:_",
             cal
         )
         return
 
-    # Selecao de data de ida
+    # ── SELECAO DATAS ──
+
     if data.startswith("data_ida:"):
-        if chat_id not in estados:
-            return
-        data_iso = data.split(":", 1)[1]
-        estados[chat_id]["cfg"]["data_ida"] = data_iso
-        estados[chat_id]["passo"] = "data_volta"
+        if chat_id not in estados: return
+        estados[chat_id]["cfg"]["data_ida"] = data.split(":", 1)[1]
         mostrar_passo_data_volta(chat_id)
         return
 
-    # Selecao de data de volta
     if data.startswith("data_volta:"):
-        if chat_id not in estados:
-            return
+        if chat_id not in estados: return
         val = data.split(":", 1)[1]
         estados[chat_id]["cfg"]["data_volta"] = "" if val == "nao" else val
-        estados[chat_id]["passo"] = "preco"
         mostrar_passo_preco(chat_id)
         return
 
-    # Selecao de preco
+    # ── SELECAO PRECO ──
+
     if data.startswith("preco:"):
-        if chat_id not in estados:
-            return
+        if chat_id not in estados: return
         val = data.split(":", 1)[1]
         if val == "digitar":
             estados[chat_id]["digitando_preco"] = True
-            msg_id = estados[chat_id]["msg_id"]
-            editar(chat_id, msg_id,
+            editar(chat_id, estados[chat_id]["msg_id"],
                 "💰 *Digite o preço máximo em reais:*\n_ex: 850_",
                 [[{"text": "❌ Cancelar", "callback_data": "cancelar"}]]
             )
         else:
             estados[chat_id]["cfg"]["preco_maximo"] = float(val)
-            estados[chat_id]["passo"] = "confirmar"
-            estados[chat_id]["digitando_preco"] = False
+            estados[chat_id]["digitando_preco"]     = False
             mostrar_confirmacao(chat_id)
         return
 
-    # Selecao de rota para editar
+    # ── EDITAR / REMOVER ROTA ──
+
     if data.startswith("sel_editar:"):
-        rid = int(data.split(":")[1])
+        rid   = int(data.split(":")[1])
         rotas = ler_rotas(chat_id)
         rota  = next((r for r in rotas if r["id"] == rid), None)
         if not rota:
             editar(chat_id, message_id, "❌ Rota não encontrada.")
             return
         estados[chat_id] = {
-            "passo":        "origem",
-            "modo":         "editar",
-            "editando_id":  rid,
-            "cfg":          {k: v for k, v in rota.items() if k != "id"},
-            "msg_id":       message_id,
-            "digitando_preco": False,
+            "passo": "origem", "modo": "editar", "editando_id": rid,
+            "cfg": {k: v for k, v in rota.items() if k != "id"},
+            "msg_id": message_id, "digitando_preco": False,
         }
         mostrar_passo_origem(chat_id, message_id)
         return
 
-    # Selecao de rota para remover
     if data.startswith("sel_remover:"):
         rid   = int(data.split(":")[1])
         rotas = ler_rotas(chat_id)
         nova  = [r for r in rotas if r["id"] != rid]
         salvar_rotas(chat_id, nova)
         editar(chat_id, message_id,
-            f"🗑️ *Rota #{rid} removida.*\n\n"
-            f"📊 Rotas restantes: *{len(nova)}*\n\n"
-            "Use /menu para continuar."
+            f"🗑️ *Rota #{rid} removida.*\n\n📊 Rotas restantes: *{len(nova)}*"
         )
         return
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PROCESSAR COMANDOS DE TEXTO
+#  PROCESSAR COMANDOS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def processar_comando(chat_id: str, cmd: str, reply_to_msg_id: int = None):
+def processar_comando(chat_id: str, cmd: str, reply_msg_id: int = None):
 
     if cmd in ["/start", "/ajuda", "/help", "/menu"]:
         enviar(chat_id,
-            "✈️ *K-Finder — rastreador de passagens*\n\n"
-            "Escolha uma opção:",
+            "✈️ *K-Finder — rastreador de passagens*\n\nEscolha uma opção:",
             teclado_menu_principal()
         )
+        return
+
+    if cmd == "/admin":
+        if not is_admin(chat_id):
+            enviar(chat_id, "❌ Acesso negado.")
+            return
+        mostrar_painel_admin(chat_id)
         return
 
     if cmd == "/adicionar":
@@ -713,12 +746,9 @@ def processar_comando(chat_id: str, cmd: str, reply_to_msg_id: int = None):
     if cmd == "/editar":
         rotas = ler_rotas(chat_id)
         if not rotas:
-            enviar(chat_id, "📭 Nenhuma rota para editar.\nUse /adicionar para começar.")
+            enviar(chat_id, "📭 Nenhuma rota para editar.")
             return
-        enviar(chat_id,
-            "✏️ *Qual rota deseja editar?*",
-            teclado_menu_rotas(rotas, "sel_editar")
-        )
+        enviar(chat_id, "✏️ *Qual rota deseja editar?*", teclado_menu_rotas(rotas, "sel_editar"))
         return
 
     if cmd == "/remover":
@@ -726,10 +756,7 @@ def processar_comando(chat_id: str, cmd: str, reply_to_msg_id: int = None):
         if not rotas:
             enviar(chat_id, "📭 Nenhuma rota para remover.")
             return
-        enviar(chat_id,
-            "🗑️ *Qual rota deseja remover?*",
-            teclado_menu_rotas(rotas, "sel_remover")
-        )
+        enviar(chat_id, "🗑️ *Qual rota deseja remover?*", teclado_menu_rotas(rotas, "sel_remover"))
         return
 
     if cmd == "/buscar_agora":
@@ -738,8 +765,7 @@ def processar_comando(chat_id: str, cmd: str, reply_to_msg_id: int = None):
             enviar(chat_id, "📭 Nenhuma rota cadastrada. Use /adicionar primeiro.")
             return
         enviar(chat_id,
-            f"🔍 *Iniciando busca para {len(rotas)} rota(s)...*\n"
-            "⏳ Isso pode demorar ~30s por rota."
+            f"🔍 *Iniciando busca para {len(rotas)} rota(s)...*\n⏳ Isso pode demorar ~30s por rota."
         )
         try:
             resultado = subprocess.run(
@@ -751,42 +777,80 @@ def processar_comando(chat_id: str, cmd: str, reply_to_msg_id: int = None):
             else:
                 enviar(chat_id, f"❌ Erro na busca:\n`{resultado.stderr[:400]}`")
         except subprocess.TimeoutExpired:
-            enviar(chat_id, "❌ Busca demorou demais (>5min). Tente novamente.")
+            enviar(chat_id, "❌ Busca demorou demais. Tente novamente.")
         except Exception as e:
-            enviar(chat_id, f"❌ Erro inesperado: {e}")
+            enviar(chat_id, f"❌ Erro: {e}")
         return
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PROCESSAR MENSAGENS DE TEXTO (apenas para preco digitado)
+#  PROCESSAR TEXTO
 # ══════════════════════════════════════════════════════════════════════════════
 
-def processar_texto(chat_id: str, texto: str):
+def processar_texto(chat_id: str, texto: str, nome_usuario: str):
     texto = texto.strip()
-    lower = texto.lower()
 
-    # Comandos sempre funcionam
+    # Comandos
     if texto.startswith("/"):
-        processar_comando(chat_id, texto.split()[0])
+        cmd = texto.split()[0].lower()
+
+        # /start sempre funciona (para pedir acesso)
+        if cmd == "/start":
+            if is_aprovado(chat_id):
+                processar_comando(chat_id, "/menu")
+            elif is_pendente(chat_id):
+                enviar(chat_id,
+                    "⏳ *Seu acesso ainda está pendente.*\n\n"
+                    "Aguarde a aprovação do administrador."
+                )
+            else:
+                # Pede acesso
+                adicionar_pendente(chat_id, nome_usuario)
+                enviar(chat_id,
+                    "👋 Olá! Seu acesso ao *K-Finder* está sendo solicitado.\n\n"
+                    "⏳ Aguarde a aprovação do administrador."
+                )
+                # Notifica o admin
+                enviar(str(TELEGRAM_CHAT_ID),
+                    f"🔔 *Nova solicitação de acesso!*\n\n"
+                    f"👤 Nome: *{nome_usuario}*\n"
+                    f"🆔 Chat ID: `{chat_id}`",
+                    teclado_aprovacao(chat_id, nome_usuario)
+                )
+            return
+
+        # Demais comandos so para aprovados
+        if not is_aprovado(chat_id):
+            enviar(chat_id,
+                "⚠️ Você não tem acesso ao K-Finder.\n"
+                "Digite /start para solicitar acesso."
+            )
+            return
+
+        processar_comando(chat_id, cmd)
         return
 
-    # Unico caso de texto livre: digitar preco manualmente
+    # Nao aprovado tentando mandar texto
+    if not is_aprovado(chat_id):
+        enviar(chat_id,
+            "⚠️ Você não tem acesso ao K-Finder.\n"
+            "Digite /start para solicitar acesso."
+        )
+        return
+
+    # Preco digitado manualmente
     if chat_id in estados and estados[chat_id].get("digitando_preco"):
         try:
-            preco = float(texto.replace("R$", "").replace(".", "").replace(",", ".").strip())
+            preco = float(texto.replace("R$","").replace(".","").replace(",",".").strip())
             estados[chat_id]["cfg"]["preco_maximo"] = preco
-            estados[chat_id]["passo"] = "confirmar"
-            estados[chat_id]["digitando_preco"] = False
+            estados[chat_id]["digitando_preco"]     = False
             mostrar_confirmacao(chat_id)
         except ValueError:
             enviar(chat_id, "❌ Valor inválido. Digite só o número.\n_ex: 850_")
         return
 
-    # Qualquer outra coisa: mostrar menu
-    enviar(chat_id,
-        "👋 Use o menu abaixo para navegar:",
-        teclado_menu_principal()
-    )
+    # Qualquer outra coisa
+    enviar(chat_id, "👋 Use o menu abaixo:", teclado_menu_principal())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -795,7 +859,7 @@ def processar_texto(chat_id: str, texto: str):
 
 def rodar_bot():
     print("=" * 55)
-    print("  K-FINDER BOT v3.0 — aguardando mensagens")
+    print("  K-FINDER BOT v3.1 — aguardando mensagens")
     print("  Envie /menu no Telegram para começar")
     print("  Pressione Ctrl+C para parar")
     print("=" * 55)
@@ -816,13 +880,11 @@ def rodar_bot():
                 msg = update.get("message", {})
                 if msg:
                     chat_id = str(msg.get("chat", {}).get("id", ""))
-                    if chat_id not in [str(u) for u in USUARIOS_PERMITIDOS if u]:
-                        print(f"⚠️  Ignorado: {chat_id}")
-                        continue
-                    texto = msg.get("text", "")
+                    texto   = msg.get("text", "")
+                    nome    = msg.get("from", {}).get("first_name", "Usuário")
                     if texto:
-                        print(f"[{chat_id}] {texto}")
-                        processar_texto(chat_id, texto)
+                        print(f"[{chat_id}] {nome}: {texto}")
+                        processar_texto(chat_id, texto, nome)
 
                 # Clique em botao
                 cb = update.get("callback_query", {})
@@ -831,8 +893,6 @@ def rodar_bot():
                     message_id = cb.get("message", {}).get("message_id")
                     cb_id      = cb.get("id", "")
                     cb_data    = cb.get("data", "")
-                    if chat_id not in [str(u) for u in USUARIOS_PERMITIDOS if u]:
-                        continue
                     print(f"[{chat_id}] callback: {cb_data}")
                     processar_callback(chat_id, cb_id, cb_data, message_id)
 
