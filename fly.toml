@@ -1,15 +1,7 @@
-app = "kfinder-bot"
-primary_region = "gru"  # São Paulo
+app = "system32-ambered-fog-7625"
+primary_region = "gru"
 
 [build]
-
-[env]
-  # Variaveis de ambiente ficam nos Secrets do Fly.io (nao aqui)
-
-[[services]]
-  # Bot nao precisa de porta publica — so polling do Telegram
-  internal_port = 8080
-  protocol = "tcp"
 
 [processes]
   app = "python bot.py"
