@@ -36,4 +36,5 @@ jobs:
 # Desativa notificacoes de email para execucoes automaticas (schedule)
 # Voce so recebe email se o workflow falhar E foi disparado manualmente
 permissions:
+  contents: read
   actions: read
