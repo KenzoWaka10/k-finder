@@ -20,11 +20,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
-EMAIL_REMETENTE    = os.getenv("EMAIL_REMETENTE")
-EMAIL_SENHA_APP    = os.getenv("EMAIL_SENHA_APP")
-EMAIL_DESTINATARIO = os.getenv("EMAIL_DESTINATARIO")
+def _env(nome: str):
+    """Le variavel de ambiente removendo espacos e quebras de linha das pontas."""
+    return (os.getenv(nome) or "").strip() or None
+
+TELEGRAM_TOKEN     = _env("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID   = _env("TELEGRAM_CHAT_ID")
+EMAIL_REMETENTE    = _env("EMAIL_REMETENTE")
+EMAIL_SENHA_APP    = _env("EMAIL_SENHA_APP")
+EMAIL_DESTINATARIO = _env("EMAIL_DESTINATARIO")
 
 CONFIG_FILE    = "config.json"
 HISTORICO_FILE = "historico_precos.json"
@@ -85,7 +89,7 @@ def buscar_passagens(config: dict) -> list:
         print("❌ Instale: pip install apify-client")
         return []
 
-    APIFY_TOKEN = os.getenv("APIFY_TOKEN")
+    APIFY_TOKEN = _env("APIFY_TOKEN")
     if not APIFY_TOKEN:
         print("❌ APIFY_TOKEN nao encontrado")
         return []
