@@ -4,11 +4,11 @@
       "id": 1,
       "origem": "LDB",
       "destino": "BPS",
-      "data_ida": "2026-03-15",
-      "data_volta": "2026-03-22",
+      "data_ida": "2026-12-10",
+      "data_volta": "2026-12-17",
       "adultos": 1,
       "preco_minimo": 0,
-      "preco_maximo": 600
+      "preco_maximo": 5000
     }
   ]
 }
