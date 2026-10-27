@@ -15,6 +15,7 @@ import json
 import subprocess
 import requests
 import calendar
+import re
 from datetime import datetime, date
 from dotenv import load_dotenv
 
@@ -23,6 +24,7 @@ load_dotenv()
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # admin (voce)
 CONFIG_FILE      = "config.json"
+ANSI             = re.compile(r"\x1b\[[0-9;]*m")  # remove cores do log
 
 PRECOS_SUGERIDOS = [300, 500, 700, 900, 1200, 1500, 2000, 2500]
 CIDADES_POR_PAG  = 8
@@ -775,7 +777,8 @@ def processar_comando(chat_id: str, cmd: str, reply_msg_id: int = None):
             if resultado.returncode == 0:
                 enviar(chat_id, "✅ Busca concluída! Alertas enviados se houver ofertas.")
             else:
-                enviar(chat_id, f"❌ Erro na busca:\n`{resultado.stderr[:400]}`")
+                saida = ANSI.sub("", resultado.stderr or resultado.stdout or "")
+                enviar(chat_id, f"❌ Erro na busca:\n`{saida[-600:]}`")
         except subprocess.TimeoutExpired:
             enviar(chat_id, "❌ Busca demorou demais. Tente novamente.")
         except Exception as e:
