@@ -108,7 +108,12 @@ def buscar_passagens(config: dict) -> list:
     run = client.actor("johnvc/google-flights-data-scraper-flight-and-price-search").call(run_input=run_input)
 
     resultados = []
-    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    if run is None:
+        print("  Apify nao retornou resultado da execucao.")
+        return []
+    # apify-client novo devolve objeto (run.default_dataset_id); o antigo devolvia dict
+    dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+    for item in client.dataset(dataset_id).iterate_items():
         best  = item.get("best_flights")  or []
         other = item.get("other_flights") or []
         for voo in best + other:
