@@ -60,7 +60,7 @@ Execução de uma busca de passagens pelo bot.
 
 Exemplo dos resultados retornados pelo sistema após consultar os voos.
 
-![Resultado da busca](docs/images/resultado.png)
+![Resultado da busca](docs/images/Resultado.png)
 
 > As imagens demonstram o fluxo de utilização do bot. Consulte a tabela de estado atual para distinguir funcionalidades validadas das que ainda estão em teste.
 
